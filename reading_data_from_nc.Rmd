@@ -1,0 +1,490 @@
+---
+title: "NOx_Model_validation"
+author: "Elliot Maceda"
+date: '2024-03-20'
+output: html_document
+---
+
+
+
+```{r imports, warning=FALSE, message=FALSE}
+
+# packages
+library(sf)
+library(ncdf4)
+library(ggplot2)
+library(stringr)
+library(readr)
+library(tidyverse)
+library(caret)
+library("rnaturalearth")
+
+# previous functions that help with EDA
+var_cor_plot = function(x,y,color_vector = NULL, alpha_val = 0.2){
+  
+  if (is.null(color_vector)){
+    plot(x, y, col = alpha("black", alpha = alpha_val),
+         xlab = as.character(substitute(x)), 
+         ylab = as.character(substitute(y)))
+    abline(0,1)
+  }else{
+    plot(x, y, col = alpha(color_vector, alpha = alpha_val),
+         xlab = as.character(substitute(x)), 
+         ylab = as.character(substitute(y)))
+    abline(0,1)
+  }
+}
+
+
+
+est_cor_plot = function(x,y,color_vector = NULL, alpha_val = 0.2){
+  
+  R = round(cor(x, y), 2)
+  NMB = round(sum(x - y)/sum(y), 2)
+  NMSE = signif(mean((x-y)^2)/(mean(x)*mean(y))*100.0, 3)
+  
+
+  if (is.null(color_vector)){
+    plot(x, y, col = alpha("black", alpha = alpha_val),
+         main=paste0("\n \n R=", R, ", NMB=", NMB, ", NMSE=", NMSE), 
+         xlab = as.character(substitute(x)), 
+         ylab = as.character(substitute(y)))
+    abline(0,1)
+  }else{
+    plot(x, y, col = alpha(color_vector, alpha = alpha_val),
+         main=paste0("\n \n R=", R, ", NMB=", NMB, ", NMSE=", NMSE), 
+         xlab = as.character(substitute(x)), 
+         ylab = as.character(substitute(y)))
+    abline(0,1)
+  }
+  
+}
+
+
+scale_0_1 = function(column_of_df){
+  result = (column_of_df - min(column_of_df)) / (max(column_of_df) - min(column_of_df))
+  return(result)
+}
+
+```
+
+
+```{r training function}
+
+
+csv_from_nc_data = function(daily_nc_directory = "D:/CTM_daily_nc",
+                            years_to_take = c("2010"),
+                            months_to_take = c("01"),
+                            area_csv_file_path = "C:/Users/71000/Downloads/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv",
+                            only_land = TRUE){
+  
+  
+  # daily_nc_directory = "D:/CTM_daily_nc"
+  # years_to_take = c("2010")
+  # months_to_take = c("01")
+  # area_csv_file_path = "C:/Users/71000/Downloads/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv"
+  # only_land = TRUE
+
+    
+    ncdf4_obj = nc_open(file.path(daily_nc_directory, years_to_take[1], paste0("gctm.omi.no2.", years_to_take[1], "0101.nc")))
+    LON_column = rep(ncvar_get(ncdf4_obj, "LON"), ncdf4_obj$var[["LAT"]]$varsize)
+    LAT_column = rep(ncvar_get(ncdf4_obj, "LAT"), each = ncdf4_obj$var[["LON"]]$varsize) 
+    
+    area_data = read_csv(area_csv_file_path)[,-1]$DXYP__
+    
+    
+    
+    # meterological_variables = c("DAO-FLDS__RADSWG", 
+    #                             "DAO-FLDS__PBL", 
+    #                             "DAO-FLDS__U10M",    
+    #                             "DAO-FLDS__V10M", 
+    #                             "DAO-3D-S__UWND",    
+    #                             "DAO-3D-S__VWND",    
+    #                             "DAO-3D-S__TMPU",
+    #                             "DAO-3D-S__SPHU")
+    
+    sources_of_NOx = c("NOX-AC-S__NOx",     
+                       "NOX-AN-S__NOx",     
+                       "NOX-BIOB__NOx",     
+                       "NOX-BIOF__NOx",  
+                       "NOX-LI-S__NOx",     
+                       "NOX-SOIL__NOx",     
+                       "NOX-FERT__NOx",     
+                       "NOX-STRT__NOx")
+    
+    num_cols = length(sources_of_NOx) + 9 # LAT, LON, DAY, MONTH, YEAR, Prior Estimates, CTM concentrations, Satellite concentrations, area
+    
+    training_matrix = matrix(ncol = num_cols, nrow = 1)
+    colnames(training_matrix) = c("LON", "LAT", "Day", "Month", "Year", "CTM_Concentrations", "Satellite_Concentrations", "Prior_Estimates","Solar_Radiation", 
+                                  "PBL_Depth", "Surface_UWinds", "Surface_VWinds", "UWinds", "VWinds", "Temperature", "Specific_Humidity", "area")
+    
+    day = 0
+    
+    for (year in years_to_take){
+        for (month in months_to_take){
+            gctm_nc_files_to_take = Sys.glob(file.path(daily_nc_directory, year, paste0("gctm.omi.no2.", year, month, "*.nc")))
+            for (gctm_nc_file in gctm_nc_files_to_take){
+                # push the day forward
+                day = day + 1
+                
+                # get the new satellite concentrations
+                gctm_nc_obj = nc_open(gctm_nc_file)
+                gctm_variable = ncvar_get(gctm_nc_obj, "IJ-AVG-S__NOx", count = c(-1,-1,2)) # retrieves the variable and its SURFACE data
+                CTM_concentrations = c(gctm_variable[,,1])
+                Satellite_concentrations = c(gctm_variable[,,2])
+                
+                # check which spots have more (valid) information for us
+                filtering_vector = Satellite_concentrations > 0
+                number_rows_added = sum(filtering_vector)
+                
+                if (number_rows_added > 0){
+                              
+                    additional_matrix = matrix(ncol = num_cols, nrow = number_rows_added)
+                    
+                    # get the corresponding CTM NC file
+                    date = strsplit(basename(gctm_nc_file), "[.]")[[1]][4]
+                    ctm_nc_file = file.path(daily_nc_directory, year, paste0("ctm.bpch.",date,".nc"))
+                    ctm_nc_obj = nc_open(ctm_nc_file)
+                    
+                    # get the prior estimates (total sums from all NOx sources)
+                    Prior_Estimates = rep(0, number_rows_added)
+                    for (NOx_source in sources_of_NOx){
+                        NOx_variable = c(ncvar_get(ctm_nc_obj, NOx_source, count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                        Prior_Estimates = Prior_Estimates + NOx_variable[filtering_vector]
+                    }
+                    
+                    # get the rest of the meterological variables
+                    Solar_Radiation = c(ncvar_get(ctm_nc_obj, "DAO-FLDS__RADSWG", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    PBL_Depth = c(ncvar_get(ctm_nc_obj, "DAO-FLDS__PBL", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    Surface_UWinds = c(ncvar_get(ctm_nc_obj, "DAO-FLDS__U10M", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    Surface_VWinds = c(ncvar_get(ctm_nc_obj, "DAO-FLDS__V10M", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    UWinds = c(ncvar_get(ctm_nc_obj, "DAO-3D-S__UWND", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    Vwinds = c(ncvar_get(ctm_nc_obj, "DAO-3D-S__VWND", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    Temperature = c(ncvar_get(ctm_nc_obj, "DAO-3D-S__TMPU", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    Specific_Humidity = c(ncvar_get(ctm_nc_obj, "DAO-3D-S__SPHU", count = c(-1,-1,1))) # retrieves the variable and its SURFACE data
+                    
+                    
+                    # Load everything into our training matrix 
+                    additional_matrix[,1] = LON_column[filtering_vector]
+                    additional_matrix[,2] = LAT_column[filtering_vector]
+                    additional_matrix[,3] = rep(day, number_rows_added)
+                    additional_matrix[,4] = rep(as.numeric(month), number_rows_added)
+                    additional_matrix[,5] = rep(as.numeric(year), number_rows_added)
+                    additional_matrix[,6] = CTM_concentrations[filtering_vector]
+                    additional_matrix[,7] = Satellite_concentrations[filtering_vector]
+                    additional_matrix[,8] = Prior_Estimates # this has already been filtered out
+                    additional_matrix[,9] = Solar_Radiation[filtering_vector]
+                    additional_matrix[,10] = PBL_Depth[filtering_vector]
+                    additional_matrix[,11] = Surface_UWinds[filtering_vector]
+                    additional_matrix[,12] = Surface_VWinds[filtering_vector]
+                    additional_matrix[,13] = UWinds[filtering_vector]
+                    additional_matrix[,14] = Vwinds[filtering_vector]
+                    additional_matrix[,15] = Temperature[filtering_vector]
+                    additional_matrix[,16] = Specific_Humidity[filtering_vector]
+                    additional_matrix[,17] = area_data[filtering_vector]
+    
+                    training_matrix = rbind(training_matrix, additional_matrix)
+    
+                }
+                  
+            }
+        }
+    }
+    
+    training_matrix = training_matrix[-1,] # take out the first NA column
+    
+    analysis_df = data.frame(training_matrix) %>% 
+      mutate(days_in_month = case_when(Month == 1 ~ 31,
+                                       Month == 2 ~ 28,
+                                       Month == 3 ~ 31,
+                                       Month == 4 ~ 30,
+                                       Month == 5 ~ 31,
+                                       Month == 6 ~ 30,
+                                       Month == 7 ~ 31,
+                                       Month == 8 ~ 31,
+                                       Month == 9 ~ 30,
+                                       Month == 10 ~ 31,
+                                       Month == 11 ~ 30,
+                                       Month == 12 ~ 31),
+             Prior_Estimates = Prior_Estimates*area/6.023e23*14*10^4*days_in_month*24*3600*1e-12) %>% 
+      select(-c(days_in_month, area))
+    
+    if (only_land){
+        sf::sf_use_s2(FALSE)
+        worldmap <- ne_countries(scale = "medium", returnclass = "sf")
+        coordinate_array = matrix(c(analysis_df$LON, analysis_df$LAT), byrow = FALSE, ncol = 2)
+        multipoint_object = st_multipoint(coordinate_array)
+        multipoint_sfc_object = st_sfc(multipoint_object)
+        many_point_geometries = st_cast(multipoint_sfc_object, "POINT")
+        
+        
+        
+        st_crs(many_point_geometries) = st_crs(worldmap) # use the same coordinate system that the world map uses
+        myland = lengths(st_intersects(many_point_geometries,worldmap)) > 0 # check which coordinates are above land
+        myland_named = ifelse(myland, "land", "sea") # check which coordinates are above land
+        
+        analysis_df = analysis_df %>% 
+          filter(myland_named == "land")
+    }
+    
+    
+    
+    training_df = analysis_df %>% 
+      mutate(LON_transformed = LON - min(LON),
+             LON_cos = cos(2*pi*LON_transformed/max(LON_transformed)),
+             LON_sin = sin(2*pi*LON_transformed/max(LON_transformed)),
+             LAT_transformed = LAT - min(LAT),
+             LAT_cos = cos(2*pi*LAT_transformed/max(LAT_transformed)),
+             LAT_sin = sin(2*pi*LAT_transformed/max(LAT_transformed)),
+             Month_cos = cos(2*pi*Month/max(Month)),
+             Month_sin = sin(2*pi*Month/max(Month))) %>% 
+      select(-c(LON, LAT, Month, LON_transformed, LAT_transformed, Year))
+    
+    # training_df[,-c(4)] = scale(training_df[,-c(4)]) # old method of scaling
+    
+    
+    
+    
+    
+    training_df[,-c(4)] = apply(training_df[,-c(4)], MARGIN = 2, FUN = scale_0_1) # check if this works
+    
+    
+    results = list(data = training_df, interpretable_data = analysis_df)
+    return(results)
+}
+
+
+
+```
+
+
+```{r fitting_function}
+
+fit_BRF = function(training_df,calculate_importance = F){
+  
+    # Now, just fit the data
+    BRF_mean_model = train(Prior_Estimates~., 
+                           data = training_df,
+                           method = "gbm", 
+                           trControl = trainControl("cv", 5), 
+                           tuneGrid = expand.grid(n.trees = 500,
+                                                  interaction.depth = 9,
+                                                  shrinkage = 0.05,
+                                                  n.minobsinnode = 4))
+    
+    
+    if (calculate_importance){
+        random_forest_model = train(Prior_Estimates~ ., 
+                                    data = training_df, 
+                                    method = "rf", 
+                                    trControl = trainControl("oob"), 
+                                    tuneGrid = expand.grid(mtry = 7))
+        
+        variable_importance_df = varImp(random_forest_model, scale = FALSE)
+        save(variable_importance_df, file = "importance_metrics.RData")
+        png("importance_plot.png", width = 700, height = 700, pointsize = 20) # can also use "bmp", "jpeg", "tiff", etc.
+        print(plot(varImp(random_forest_model, scale = FALSE)))
+        dev.off()
+    }
+    
+    return(BRF_mean_model)
+}
+
+```
+
+```{r predictive_function}
+
+predict_BRF_with_Satellite = function(predictive_model, test_df, interpretable_test_df){
+    new_data_to_predict = test_df %>% 
+      mutate(NOx_concentrations = Satellite_Concentrations) %>% 
+      select(-c(CTM_Concentrations,Satellite_Concentrations))
+    ML_Estimates = predict(predictive_model, newdata = new_data_to_predict)
+    results = cbind(interpretable_test_df, ML_Estimates)
+    results$residuals = results$Prior_Estimates - results$ML_Estimates
+    return(results)
+}
+
+predict_BRF_with_CTM = function(predictive_model, test_df, interpretable_test_df){
+    new_data_to_predict = test_df %>% 
+      mutate(NOx_concentrations = CTM_Concentrations) %>% 
+      select(-c(CTM_Concentrations,Satellite_Concentrations))
+    ML_Estimates = predict(predictive_model, newdata = new_data_to_predict)
+    results = cbind(interpretable_test_df, ML_Estimates)
+    results$residuals = results$Prior_Estimates - results$ML_Estimates
+    return(results)
+}
+
+```
+
+
+```{r summarize_months}
+monthly_average_and_combine = function(intpretable_results_with_ML, path_to_posterior_data){
+  
+  
+    summarized_test_results = intpretable_results_with_ML %>% 
+      group_by(Month, LON, LAT) %>% 
+      summarize(ML_Monthly_Averages = mean(ML_Estimates),
+                Prior_Monthly_Averages = mean(Prior_Estimates),
+                residuals_Monthly_Averages = mean(residuals),
+                count = n())                                                                                                            
+    posterior_data = read_csv(paste0(path_to_posterior_data))[,-1] %>% 
+      rename(Month = month)
+    
+    combined_data = left_join(summarized_test_results, posterior_data)
+    combined_data$estimation_diff = combined_data$Posterior_Estimates - combined_data$ML_Monthly_Averages
+    
+    return(combined_data)
+}
+
+```
+
+
+
+
+
+```{r source}
+
+imported_data = csv_from_nc_data(daily_nc_directory = "D:/CTM_daily_nc",
+                            years_to_take = c("2010"),
+                            months_to_take = c("01", "02"),
+                            area_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv",
+                            only_land = TRUE)
+
+
+
+standardized_data = imported_data$data
+interpretable_data = imported_data$interpretable_data
+
+
+response = standardized_data$Prior_Estimates # should be the same as interpretable_data$Prior_Estimates
+# response = rgamma(10000, shape = 1) # comment this out once I get the data
+strata = rep("ungrouped", length(response))
+strata[response > quantile(response, .5)] = "top50%"
+strata[response > quantile(response, .8)] = "top20%"
+strata[response > quantile(response, .90)] = "top10%"
+strata[response > quantile(response, .95)] = "top5%"
+strata[response > quantile(response, .99)] = "top1%"
+strata[strata == "ungrouped"] = "bottom50%"
+strata
+table(strata)
+
+
+indices_to_sample = c(sample(which(strata == "top1%"), round(.8*sum(strata == "top1%")), replace = FALSE),
+                      sample(which(strata == "top5%"), round(.8*sum(strata == "top5%")), replace = FALSE),
+                      sample(which(strata == "top10%"), round(.8*sum(strata == "top10%")), replace = FALSE),
+                      sample(which(strata == "top20%"), round(.8*sum(strata == "top20%")), replace = FALSE),
+                      sample(which(strata == "top50%"), round(.8*sum(strata == "top50%")), replace = FALSE),
+                      sample(which(strata == "bottom50%"), round(.8*sum(strata == "bottom50%")), replace = FALSE))
+
+
+data_to_train = standardized_data[indices_to_sample,] # length(indices_to_sample)/nrow(standardized_data) = 0.8
+data_to_predict = standardized_data[-indices_to_sample,]
+data_to_analyze_after_prediction = interpretable_data[-indices_to_sample,]
+data_to_train$NOx_concentrations = data_to_train$CTM_Concentrations
+data_to_train$CTM_Concentrations = NULL
+data_to_train$Satellite_Concentrations = NULL
+print(sum(data_to_train$Prior_Estimates < 0))
+print(sum(data_to_predict$Prior_Estimates < 0))
+print(sum(data_to_analyze_after_prediction$Prior_Estimates < 0))
+
+BRF_model = fit_BRF(data_to_train, calculate_importance = F)
+# save(BRF_model, file = "BRF_model2.RData")
+
+results_dataset_using_Satellite = predict_BRF_with_Satellite(BRF_model, data_to_predict, data_to_analyze_after_prediction)
+results_dataset_using_CTM = predict_BRF_with_CTM(BRF_model, data_to_predict, data_to_analyze_after_prediction)
+
+visualization_df = monthly_average_and_combine(results_dataset_using_Satellite, path_to_posterior_data = "./cleaned_posterior_data/posterior_estimate_2010.csv")
+
+visualization_df_using_CTM = monthly_average_and_combine(results_dataset_using_CTM, path_to_posterior_data = "./cleaned_posterior_data/posterior_estimate_2010.csv")
+
+visualization_df$ML_Monthly_Averages_using_CTM = visualization_df_using_CTM$ML_Monthly_Averages
+visualization_df$residuals_Monthly_Averages_using_CTM = visualization_df_using_CTM$residuals_Monthly_Averages
+
+save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "results.RData")
+
+
+```
+
+
+```{r EDA and identifying troublepoints}
+
+
+# load("results.RData")
+
+sum(standardized_data$Prior_Estimates < 0)
+sum(visualization_df$Prior_Monthly_Averages < 0)
+
+# Still a few are negative... maybe should hard-code these to zero? 
+sum(visualization_df$ML_Monthly_Averages < 0)
+sum(visualization_df$ML_Monthly_Averages_using_CTM < 0)
+
+# just a small proportion...
+sum(visualization_df$ML_Monthly_Averages_using_CTM < 0)/nrow(visualization_df)
+sum(visualization_df$ML_Monthly_Averages < 0)/nrow(visualization_df)
+
+ML_estimates = visualization_df$ML_Monthly_Averages
+ML_estimates_CTM = visualization_df$ML_Monthly_Averages_using_CTM
+Posterior_estimates = visualization_df$Posterior_Estimates
+Prior_estimates = visualization_df$Prior_Monthly_Averages
+
+
+# Seemingly there are issues using the Satellite concentrations in place of the CTM concentrations 
+est_cor_plot(Prior_estimates,ML_estimates)
+est_cor_plot(Prior_estimates,ML_estimates_CTM)
+
+est_cor_plot(Posterior_estimates,ML_estimates)
+est_cor_plot(Posterior_estimates,ML_estimates_CTM)
+
+# est_cor_plot(Posterior_estimates, ML_estimates, color_vector = visualization_df$troublepts)
+
+```
+
+
+```{r figuring out orientation of heatmap}
+
+heatmap_df = visualization_df %>% 
+  group_by(LON, LAT) %>% 
+  summarize(average_residuals = mean(residuals_Monthly_Averages),
+            average_residuals_CTM = mean(residuals_Monthly_Averages_using_CTM),
+            count = mean(count))
+
+```
+
+
+
+```{r make heatmap}
+
+# read in the .nc file: heatmap_palette.nc (which was originally gctm.Jan1st.2010)
+gctm_nc_obj = nc_open("heatmap_palette.nc", write =TRUE)
+
+# read in longitudes, latitudes, and original data for Jan 1st
+LON = rep(ncvar_get(gctm_nc_obj, "LON"), gctm_nc_obj$var[["LAT"]]$varsize)
+LAT = rep(ncvar_get(gctm_nc_obj, "LAT"), each = gctm_nc_obj$var[["LON"]]$varsize)
+NOx_tracer = ncvar_get(gctm_nc_obj, "IJ-AVG-S__NOx", count = c(-1,-1,4)) # this just has 4 layers. We can only work with these four layers at a time
+orig_CTM_conc = NOx_tracer[,,1]
+orig_CTM_conc_vec = c(orig_CTM_conc)
+orig_sat_conc = NOx_tracer[,,2]
+orig_sat_conc_vec = c(orig_sat_conc)
+
+# use the LAT/LON of the original data, and combine with our results (need to do this because we dropped so much information earlier)
+complete_grid = as.data.frame(cbind(LON, LAT, orig_CTM_conc_vec, orig_sat_conc_vec))
+combined_df = left_join(complete_grid, heatmap_df, by = c("LON", "LAT"))
+combined_df$average_residuals = ifelse(is.na(combined_df$average_residuals), mean(combined_df$average_residuals[!is.na(combined_df$average_residuals)]), combined_df$average_residuals)
+combined_df$average_residuals_CTM = ifelse(is.na(combined_df$average_residuals_CTM), mean(combined_df$average_residuals_CTM[!is.na(combined_df$average_residuals_CTM)]), combined_df$average_residuals_CTM)
+combined_df$count = ifelse(is.na(combined_df$count), 0, combined_df$count)
+
+# put in the 4 layers of information: (1) original CTM for Jan 1st, 2010, (2) original Satellite for Jan 1st, 2010
+# (3) residuals, and (4) residuals when using the CTM concentrations
+# Why use (1) and (2)? To double check that we can plug in data correctly.
+mydata_array1 = combined_df$orig_CTM_conc_vec
+mydata_array2 = combined_df$orig_sat_conc_vec
+mydata_array3 = combined_df$average_residuals
+mydata_array4 = combined_df$average_residuals_CTM
+
+total_data = c(mydata_array1, mydata_array2, mydata_array3, mydata_array4)
+ncvar_put(gctm_nc_obj, gctm_nc_obj$var$`IJ-AVG-S__NOx`$name, total_data)
+nc_close(gctm_nc_obj)
+
+```
+
+
