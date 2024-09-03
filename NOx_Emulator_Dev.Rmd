@@ -1,0 +1,174 @@
+---
+title: "NOx_Emulator_Dev"
+author: "Elliot Maceda"
+date: '2024-03-20'
+output: html_document
+---
+
+
+```{r source}
+
+# function that creates the tidyverse dataframe from the .nc daily data
+source("data_script.R") 
+
+
+imported_data = csv_from_nc_data(daily_nc_directory = "D:/CTM_daily_nc",
+                            years_to_take = c("2010"),
+                            months_to_take = c("01", "02"),
+                            area_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv",
+                            only_land = TRUE)
+
+
+
+standardized_data = imported_data$data # used to fit the boosted tree model
+interpretable_data = imported_data$interpretable_data # used for plots, analysis
+
+
+```
+
+
+```{r data split}
+
+# Here we split into training and testing data
+
+# split by stratifying into groups based on the responses.
+response = standardized_data$Prior_Estimates
+strata = rep("ungrouped", length(response))
+strata[response > quantile(response, .5)] = "top50%"
+strata[response > quantile(response, .8)] = "top20%"
+strata[response > quantile(response, .90)] = "top10%"
+strata[response > quantile(response, .95)] = "top5%"
+strata[response > quantile(response, .99)] = "top1%"
+strata[strata == "ungrouped"] = "bottom50%"
+table(strata)
+
+
+indices_to_sample = c(sample(which(strata == "top1%"), round(.8*sum(strata == "top1%")), replace = FALSE),
+                      sample(which(strata == "top5%"), round(.8*sum(strata == "top5%")), replace = FALSE),
+                      sample(which(strata == "top10%"), round(.8*sum(strata == "top10%")), replace = FALSE),
+                      sample(which(strata == "top20%"), round(.8*sum(strata == "top20%")), replace = FALSE),
+                      sample(which(strata == "top50%"), round(.8*sum(strata == "top50%")), replace = FALSE),
+                      sample(which(strata == "bottom50%"), round(.8*sum(strata == "bottom50%")), replace = FALSE))
+
+
+data_to_train = standardized_data[indices_to_sample,] # training dataset
+data_to_predict = standardized_data[-indices_to_sample,] # testing dataset to predict
+data_to_analyze_after_prediction = interpretable_data[-indices_to_sample,] # interpretable version of the test dataset we will predict... used to match with more interpretable covariates
+
+```
+
+
+```{r model fitting and prediction}
+
+source("model_script.R") # function used to fit the model, as well as predict with it
+
+# before training, put the CTM concentrations into the "NOx Concentrations"
+data_to_train$NOx_concentrations = data_to_train$CTM_Concentrations
+data_to_train$CTM_Concentrations = NULL
+data_to_train$Satellite_Concentrations = NULL
+
+BRF_model = fit_BRF(data_to_train, calculate_importance = F)
+# save(BRF_model, file = "BRF_model2.RData")
+
+# different functions are used for different "NOx concentrations"
+results_dataset_using_Satellite = predict_BRF_with_Satellite(BRF_model, data_to_predict, data_to_analyze_after_prediction)
+results_dataset_using_CTM = predict_BRF_with_CTM(BRF_model, data_to_predict, data_to_analyze_after_prediction)
+
+```
+
+
+
+```{r data cleaning for plots}
+
+source("plot_scripts.R") # functions for cleaning the data to be monthly (to match posteriors) and plot
+
+visualization_df = monthly_average_and_combine(results_dataset_using_Satellite, path_to_posterior_data = "./cleaned_posterior_data/posterior_estimate_2010.csv")
+
+visualization_df_using_CTM = monthly_average_and_combine(results_dataset_using_CTM, path_to_posterior_data = "./cleaned_posterior_data/posterior_estimate_2010.csv")
+
+visualization_df$ML_Monthly_Averages_using_CTM = visualization_df_using_CTM$ML_Monthly_Averages
+visualization_df$residuals_Monthly_Averages_using_CTM = visualization_df_using_CTM$residuals_Monthly_Averages
+
+save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "results.RData")
+
+
+```
+
+
+```{r EDA and identifying troublepoints}
+
+
+# load("results.RData")
+
+sum(standardized_data$Prior_Estimates < 0)
+sum(visualization_df$Prior_Monthly_Averages < 0)
+
+# Still a few are negative... maybe should hard-code these to zero? 
+sum(visualization_df$ML_Monthly_Averages < 0)
+sum(visualization_df$ML_Monthly_Averages_using_CTM < 0)
+
+# just a small proportion...
+sum(visualization_df$ML_Monthly_Averages_using_CTM < 0)/nrow(visualization_df)
+sum(visualization_df$ML_Monthly_Averages < 0)/nrow(visualization_df)
+
+ML_estimates = visualization_df$ML_Monthly_Averages
+ML_estimates_CTM = visualization_df$ML_Monthly_Averages_using_CTM
+Posterior_estimates = visualization_df$Posterior_Estimates
+Prior_estimates = visualization_df$Prior_Monthly_Averages
+
+
+# Seemingly there are issues using the Satellite concentrations in place of the CTM concentrations 
+est_cor_plot(Prior_estimates,ML_estimates)
+est_cor_plot(Prior_estimates,ML_estimates_CTM)
+
+est_cor_plot(Posterior_estimates,ML_estimates)
+est_cor_plot(Posterior_estimates,ML_estimates_CTM)
+
+# est_cor_plot(Posterior_estimates, ML_estimates, color_vector = visualization_df$troublepts)
+
+```
+
+
+```{r make heatmap}
+
+heatmap_df = visualization_df %>% 
+  group_by(LON, LAT) %>% 
+  summarize(average_residuals = mean(residuals_Monthly_Averages),
+            average_residuals_CTM = mean(residuals_Monthly_Averages_using_CTM),
+            count = mean(count))
+
+
+# read in the .nc file: heatmap_palette.nc (which was originally gctm.Jan1st.2010)
+gctm_nc_obj = nc_open("heatmap_palette.nc", write =TRUE)
+
+# read in longitudes, latitudes, and original data for Jan 1st
+LON = rep(ncvar_get(gctm_nc_obj, "LON"), gctm_nc_obj$var[["LAT"]]$varsize)
+LAT = rep(ncvar_get(gctm_nc_obj, "LAT"), each = gctm_nc_obj$var[["LON"]]$varsize)
+NOx_tracer = ncvar_get(gctm_nc_obj, "IJ-AVG-S__NOx", count = c(-1,-1,4)) # this just has 4 layers. We can only work with these four layers at a time
+orig_CTM_conc = NOx_tracer[,,1]
+orig_CTM_conc_vec = c(orig_CTM_conc)
+orig_sat_conc = NOx_tracer[,,2]
+orig_sat_conc_vec = c(orig_sat_conc)
+
+# use the LAT/LON of the original data, and combine with our results (need to do this because we dropped so much information earlier)
+complete_grid = as.data.frame(cbind(LON, LAT, orig_CTM_conc_vec, orig_sat_conc_vec))
+combined_df = left_join(complete_grid, heatmap_df, by = c("LON", "LAT"))
+combined_df$average_residuals = ifelse(is.na(combined_df$average_residuals), mean(combined_df$average_residuals[!is.na(combined_df$average_residuals)]), combined_df$average_residuals)
+combined_df$average_residuals_CTM = ifelse(is.na(combined_df$average_residuals_CTM), mean(combined_df$average_residuals_CTM[!is.na(combined_df$average_residuals_CTM)]), combined_df$average_residuals_CTM)
+combined_df$count = ifelse(is.na(combined_df$count), 0, combined_df$count)
+
+# put in the 4 layers of information: (1) original CTM for Jan 1st, 2010, (2) original Satellite for Jan 1st, 2010
+# (3) residuals, and (4) residuals when using the CTM concentrations
+# Why use (1) and (2)? To double check that we can plug in data correctly.
+mydata_array1 = combined_df$orig_CTM_conc_vec
+mydata_array2 = combined_df$orig_sat_conc_vec
+mydata_array3 = combined_df$average_residuals
+mydata_array4 = combined_df$average_residuals_CTM
+
+total_data = c(mydata_array1, mydata_array2, mydata_array3, mydata_array4)
+ncvar_put(gctm_nc_obj, gctm_nc_obj$var$`IJ-AVG-S__NOx`$name, total_data)
+nc_close(gctm_nc_obj)
+
+```
+
+
