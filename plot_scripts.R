@@ -2,19 +2,29 @@
 
 
 
-monthly_average_and_combine = function(intpretable_results_with_ML, path_to_posterior_data){
+monthly_average_and_combine = function(intpretable_results_with_ML, paths_to_posterior_data, years){
   
   
   summarized_test_results = intpretable_results_with_ML %>% 
-    group_by(Month, LON, LAT) %>% 
+    group_by(Year, Month, LON, LAT) %>% 
     summarize(ML_Monthly_Averages = mean(ML_Estimates),
               Prior_Monthly_Averages = mean(Prior_Estimates),
               residuals_Monthly_Averages = mean(residuals),
+              pop_density = mean(avg_pop_density), 
+              pop_count = mean(total_pop_count),
               count = n())                                                                                                            
-  posterior_data = read_csv(paste0(path_to_posterior_data))[,-1] %>% 
-    rename(Month = month)
   
-  combined_data = left_join(summarized_test_results, posterior_data)
+  all_posterior_data = data.frame(matrix(ncol = ncol(summarized_test_results), nrow = 0))
+  colnames(all_posterior_data) <- colnames(summarized_test_results)
+  
+  for (i in 1:length(paths_to_posterior_data)){
+    posterior_data = read_csv(paste0(paths_to_posterior_data[i]))[,-1] %>% 
+      rename(Month = month) %>% 
+      mutate(Year = years[i])
+    all_posterior_data = rbind(all_posterior_data, posterior_data)
+  }
+  
+  combined_data = left_join(summarized_test_results, all_posterior_data)
   combined_data$estimation_diff = combined_data$Posterior_Estimates - combined_data$ML_Monthly_Averages
   
   return(combined_data)

@@ -18,24 +18,31 @@ scale_0_1 = function(column_of_df){
 
 
 csv_from_nc_data = function(daily_nc_directory = "D:/CTM_daily_nc",
-                            years_to_take = c("2010"),
-                            months_to_take = c("01"),
-                            area_csv_file_path = "C:/Users/71000/Downloads/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv",
+                            years_to_take = c("2010", "2011"),
+                            months_to_take = c("01", "02", "03", "04", "05","06", "07", "08", "09","10","11","12"),
+                            area_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/area_data/area.csv",
+                            avg_population_density_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_data/density/avg_population_density_data.csv",
+                            total_population_count_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_data/count/total_population_count_data.csv",
                             only_land = TRUE){
   
   
+  # # to debug
   # daily_nc_directory = "D:/CTM_daily_nc"
-  # years_to_take = c("2010")
-  # months_to_take = c("01")
-  # area_csv_file_path = "C:/Users/71000/Downloads/NOx_Emulator-main/NOx_Emulator-main/area_data/area.csv"
-  # only_land = TRUE
-  
+  # years_to_take = c("2010", "2011")
+  # months_to_take = c("01", "02", "03", "04", "05","06", "07", "08", "09","10","11","12")
+  # area_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/area_data/area.csv"
+  # avg_population_density_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_data/avg_population_density_data.csv"
+  # total_population_count_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_count/total_population_count_data.csv"
+  # only_land = TRUE  
   
   ncdf4_obj = nc_open(file.path(daily_nc_directory, years_to_take[1], paste0("gctm.omi.no2.", years_to_take[1], "0101.nc")))
   LON_column = rep(ncvar_get(ncdf4_obj, "LON"), ncdf4_obj$var[["LAT"]]$varsize)
   LAT_column = rep(ncvar_get(ncdf4_obj, "LAT"), each = ncdf4_obj$var[["LON"]]$varsize) 
   
   area_data = read_csv(area_csv_file_path)[,-1]$DXYP__
+  
+  avg_population_density_data = read_csv(avg_population_density_csv_file_path)$avg_population_density
+  total_population_count_data = read_csv(total_population_count_csv_file_path)$total_population_count
   
   
   
@@ -57,11 +64,11 @@ csv_from_nc_data = function(daily_nc_directory = "D:/CTM_daily_nc",
                      "NOX-FERT__NOx",     
                      "NOX-STRT__NOx")
   
-  num_cols = length(sources_of_NOx) + 9 # LAT, LON, DAY, MONTH, YEAR, Prior Estimates, CTM concentrations, Satellite concentrations, area
+  num_cols = length(sources_of_NOx) + 11 # LAT, LON, DAY, MONTH, YEAR, Prior Estimates, CTM concentrations, Satellite concentrations, area, avg_pop_density, total_pop_count
   
   training_matrix = matrix(ncol = num_cols, nrow = 1)
   colnames(training_matrix) = c("LON", "LAT", "Day", "Month", "Year", "CTM_Concentrations", "Satellite_Concentrations", "Prior_Estimates","Solar_Radiation", 
-                                "PBL_Depth", "Surface_UWinds", "Surface_VWinds", "UWinds", "VWinds", "Temperature", "Specific_Humidity", "area")
+                                "PBL_Depth", "Surface_UWinds", "Surface_VWinds", "UWinds", "VWinds", "Temperature", "Specific_Humidity", "area", "avg_pop_density", "total_pop_count")
   
   day = 0
   
@@ -127,16 +134,18 @@ csv_from_nc_data = function(daily_nc_directory = "D:/CTM_daily_nc",
           additional_matrix[,15] = Temperature[filtering_vector]
           additional_matrix[,16] = Specific_Humidity[filtering_vector]
           additional_matrix[,17] = area_data[filtering_vector]
+          additional_matrix[,18] = avg_population_density_data[filtering_vector]
+          additional_matrix[,19] = total_population_count_data[filtering_vector]
           
           training_matrix = rbind(training_matrix, additional_matrix)
           
         }
-        
+        nc_close(gctm_nc_obj)
       }
     }
   }
   
-  training_matrix = training_matrix[-1,] # take out the first NA column
+  training_matrix = training_matrix[-1,] # take out the first NA row
   
   analysis_df = data.frame(training_matrix) %>% 
     mutate(days_in_month = case_when(Month == 1 ~ 31,
@@ -191,7 +200,7 @@ csv_from_nc_data = function(daily_nc_directory = "D:/CTM_daily_nc",
   
   
   
-  training_df[,-c(4)] = apply(training_df[,-c(4)], MARGIN = 2, FUN = scale_0_1) # check if this works
+  training_df[,-c(4)] = apply(training_df[,-c(4)], MARGIN = 2, FUN = scale_0_1) # standardize everything except prior_estimates, which we will train against
   
   
   results = list(data = training_df, interpretable_data = analysis_df)
