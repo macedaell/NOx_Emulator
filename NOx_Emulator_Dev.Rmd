@@ -9,17 +9,17 @@ output: html_document
 ```{r source}
 
 # function that creates the tidyverse dataframe from the .nc daily data, along with a scaling function
-source("data_script.R") 
+source("data_script.R")
 
 # we are going to do ALL days from 2010 and 2011
 # we are going to use the population counts and densities as part of the model
 # we are only using land and data with satellite concentrations that are positive
-imported_data = csv_from_nc_data(daily_nc_directory = "D:/CTM_daily_nc",
-                            years_to_take = c("2010", "2011"),
+imported_data = csv_from_nc_data_v2(daily_nc_directory = "F:/CTM_daily_nc",
+                            years_to_take = c("2010", "2011","2012"),
                             months_to_take = c("01", "02", "03", "04", "05","06", "07", "08", "09","10","11","12"),
-                            area_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/area_data/area.csv",
-                            avg_population_density_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_data/density/avg_population_density_data.csv",
-                            total_population_count_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator-main/population_data/count/total_population_count_data.csv",
+                            area_csv_file_path = "C:/Users/ellio/OneDrive/Desktop/NOx_Emulator/area_data/area.csv",
+                            avg_population_density_csv_file_path = "C:/Users/ellio/OneDrive/Desktop/NOx_Emulator/population_data/density/avg_population_density_data.csv",
+                            total_population_count_csv_file_path = "C:/Users/ellio/OneDrive/Desktop/NOx_Emulator/population_data/count/total_population_count_data.csv",
                             only_land = TRUE)
 # Variables #
 # Spatio-temporal Variables: Lat, Lon, Day, Month, (should probably add year as a numeric predictor)
@@ -58,6 +58,7 @@ strata[response > quantile(response, .95)] = "top5%"
 strata[response > quantile(response, .99)] = "top1%"
 strata[strata == "ungrouped"] = "bottom50%"
 table(strata)
+round(table(strata)/sum(table(strata)),3)*100 # strata percentages --> exactly what I predicted
 
 
 indices_to_sample = c(sample(which(strata == "top1%"), round(.8*sum(strata == "top1%")), replace = FALSE),
@@ -70,7 +71,9 @@ indices_to_sample = c(sample(which(strata == "top1%"), round(.8*sum(strata == "t
 
 # split the standardized data into training and holdout sets
 data_to_train = standardized_data[indices_to_sample,] # training dataset
+print(nrow(data_to_train))
 data_to_predict = standardized_data[-indices_to_sample,] # testing dataset to predict
+print(nrow(data_to_predict))
 
 # since we are only interested in the holdout correlation, we filter out the interepretable data corresponding to the training dataset
 data_to_analyze_after_prediction = interpretable_data[-indices_to_sample,] 
@@ -88,10 +91,10 @@ data_to_train$NOx_concentrations = data_to_train$CTM_Concentrations # create a n
 data_to_train$CTM_Concentrations = NULL # drop the "CTM concentrations"
 data_to_train$Satellite_Concentrations = NULL # drop the "Satellite Concentrations"
 
-# NOW fit the model (so these only have CTM NOx concentrations against the Prior NOx emissions)
+# # NOW fit the model (so these only have CTM NOx concentrations against the Prior NOx emissions)
 BRF_model = fit_BRF(data_to_train, calculate_importance = F) # this actually takes awhile
-save(BRF_model, file = "BRF_model_twoyears_withpop.RData") # save the results
-
+save(BRF_model, file = "BRF_model_3years_v2.RData") # save the results
+# load("BRF_model_3years.RData")
 
 # now we'll use the holdout set to predict emissions. 
 # we use different functions for different "NOx concentrations"
@@ -106,8 +109,8 @@ results_dataset_using_Satellite = predict_BRF_with_Satellite(BRF_model, data_to_
 results_dataset_using_CTM = predict_BRF_with_CTM(BRF_model, data_to_predict, data_to_analyze_after_prediction)
 
 
-# NOTE: Potential issue here!
-max(abs(results_dataset_using_Satellite$ML_Estimates - results_dataset_using_CTM$ML_Estimates)) # comes out to 0.0332068 (about the same as before)
+
+# [TgN/box] = [molec/cm2/s] * area * 14 * 10^(4) * days * 24 * 3600 * 1e-12 / 6.023e23
 
 
 # Why add the results to the interpretable dataset? To make the correlation plots
@@ -125,65 +128,94 @@ max(abs(results_dataset_using_Satellite$ML_Estimates - results_dataset_using_CTM
 source("plot_scripts.R")
 
 # this function summarizes the daily data by averaging over Year/Month and location. So the ML emission estimates will be averaged over each month, then merged with the posterior
-visualization_df = monthly_average_and_combine(results_dataset_using_Satellite, paths_to_posterior_data = c("./cleaned_posterior_data/posterior_estimate_2010.csv", 
-  "./cleaned_posterior_data/posterior_estimate_2011.csv"), years = c(2010,2011))
+visualization_df = monthly_average_and_combine_v2(results_dataset_using_Satellite, paths_to_posterior_data = c("./cleaned_posterior_data/posterior_estimate_2010.csv", 
+  "./cleaned_posterior_data/posterior_estimate_2011.csv",
+  "./cleaned_posterior_data/posterior_estimate_2012.csv"), years = c(2010,2011,2012))
 
 # same thing, but do this with the CTM-based ML estimates. 
-visualization_df_using_CTM = monthly_average_and_combine(results_dataset_using_CTM, paths_to_posterior_data = c("./cleaned_posterior_data/posterior_estimate_2010.csv", 
-  "./cleaned_posterior_data/posterior_estimate_2011.csv"), years = c(2010,2011))
+visualization_df_using_CTM = monthly_average_and_combine_v2(results_dataset_using_CTM, paths_to_posterior_data = c("./cleaned_posterior_data/posterior_estimate_2010.csv", 
+  "./cleaned_posterior_data/posterior_estimate_2011.csv",
+  "./cleaned_posterior_data/posterior_estimate_2012.csv"), years = c(2010,2011,2012))
 
 # merge these two datasets so we don't get confused and overwhelmed...
 # now just save the CTM-based predictions to another variable, which explicitly mentions using the CTM concentrations
-visualization_df$ML_Monthly_Averages_using_CTM = visualization_df_using_CTM$ML_Monthly_Averages
-visualization_df$residuals_Monthly_Averages_using_CTM = visualization_df_using_CTM$residuals_Monthly_Averages
+visualization_df$imputed_ML_Estimates_CTM = visualization_df_using_CTM$imputed_ML_Estimates
+visualization_df$added_ML_Estimates_CTM = visualization_df_using_CTM$added_ML_Estimates
+# visualization_df$imputed_residuals_CTM = visualization_df_using_CTM$imputed_residuals
+# visualization_df$Post_ML_diff_CTM = visualization_df_using_CTM$Post_ML_diff
+# visualization_df$Prior_ML_diff_CTM = visualization_df_using_CTM$Prior_ML_diff
 
 # now we only need to use visualization_df for the plots
 
 # save all the work we just did (optional, since honestly the bottleneck is the training)
-save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "results_twoyears_withpop.RData")
+save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "results_3years_v2.RData")
 
 ```
+
 
 
 ```{r EDA and identifying troublepoints}
 
 # now using visualization_df, we can make our plots
-ML_estimates = visualization_df$ML_Monthly_Averages
-ML_estimates_CTM = visualization_df$ML_Monthly_Averages_using_CTM
+ML_estimates = visualization_df$imputed_ML_Estimates
+ML_estimates_CTM = visualization_df$imputed_ML_Estimates_CTM
 Posterior_estimates = visualization_df$Posterior_Estimates
-Prior_estimates = visualization_df$Prior_Monthly_Averages
+Prior_estimates = visualization_df$imputed_Prior_Estimates
 
-max(abs(ML_estimates - ML_estimates_CTM)) # comes out to 0.03101414 (about the same as before)
 
-# Prior vs ML estimates using satellite
 est_cor_plot(Prior_estimates,ML_estimates)
 
-# Prior vs. ML estimates using CTM (should be the best, since not extrapolating)
-est_cor_plot(Prior_estimates,ML_estimates_CTM)
+est_cor_plot(Prior_estimates,ML_estimates_CTM) # we guess this would be the best
 
-# Posterior vs. ML estimates using satellite (this is what we would like to be really good)
-est_cor_plot(Posterior_estimates,ML_estimates)
+est_cor_plot(Posterior_estimates,ML_estimates) # we would like this to be the best
 
-# Posterior vs. ML estimates using CTM 
 est_cor_plot(Posterior_estimates,ML_estimates_CTM)
 
+est_cor_plot(Posterior_estimates,Prior_estimates) # Posterior vs Prior
 
 ```
+
+
+
+
+```{r distributional plots}
+# concentrations
+boxplot_df = data.frame(CTM = visualization_df$monthly_CTM_Concentrations, Satellite = visualization_df$monthly_Satellite_Concentrations) %>% 
+  pivot_longer(cols = 1:2, names_to = "conc_origin", values_to = "units_of_0_to_1")
+boxplot(units_of_0_to_1~conc_origin, data = boxplot_df)
+
+# posterior versus prior versus ML versus ML with CTM
+boxplot_df = data.frame(Posterior = visualization_df$Posterior_Estimates,
+                        Prior = visualization_df$imputed_Prior_Estimates,
+                        ML = visualization_df$imputed_ML_Estimates,
+                        ML_CTM = visualization_df$imputed_ML_Estimates_CTM) %>% 
+  pivot_longer(cols = 1:4, names_to = "Emissions", values_to = "TgN_per_box")
+boxplot(TgN_per_box~Emissions, data = boxplot_df)
+
+```
+
+
+
 
 
 ```{r make heatmap}
 
 # now we'd like to make a heatmap that allows us to look at important potential predictors
+visualization_df$residuals1 = visualization_df$Posterior_Estimates - visualization_df$imputed_ML_Estimates # 
+visualization_df$residuals2 = visualization_df$imputed_Prior_Estimates - visualization_df$Posterior_Estimates # prior vs posterior
+visualization_df$residuals3 = visualization_df$imputed_Prior_Estimates - visualization_df$imputed_ML_Estimates # what happens when we plug in satellite data (because Prior = ML with CTM)
+visualization_df$residuals4 = visualization_df$imputed_Prior_Estimates - visualization_df$imputed_ML_Estimates_CTM # if the model is good
+
 
 # first, choose variables we are interested in recording
 # average them across LAT and LON
 heatmap_df = visualization_df %>% 
   group_by(LON, LAT) %>% 
-  summarize(average_residuals = mean(residuals_Monthly_Averages),
-            average_residuals_CTM = mean(residuals_Monthly_Averages_using_CTM),
-            avg_pop_density = mean(pop_density),
-            avg_pop_count = mean(pop_count),
-            count = mean(count))
+  summarize(var1 = mean(residuals1),
+            var2 = mean(residuals2),
+            var3 = mean(residuals3),
+            var4 = mean(residuals4))
+            # count = mean(count))
 
 
 # read in the .nc file: heatmap_palette.nc (which was originally gctm.Jan1st.2010)
@@ -193,29 +225,29 @@ gctm_nc_obj = nc_open("heatmap_palette.nc", write =TRUE)
 LON = rep(ncvar_get(gctm_nc_obj, "LON"), gctm_nc_obj$var[["LAT"]]$varsize)
 LAT = rep(ncvar_get(gctm_nc_obj, "LAT"), each = gctm_nc_obj$var[["LON"]]$varsize)
 
-# these are completely optional, and probably should be taken out
-NOx_tracer = ncvar_get(gctm_nc_obj, "IJ-AVG-S__NOx", count = c(-1,-1,4)) # this just has 4 layers. We can only work with these four layers at a time
-orig_CTM_conc = NOx_tracer[,,1]
-orig_CTM_conc_vec = c(orig_CTM_conc)
-orig_sat_conc = NOx_tracer[,,2]
-orig_sat_conc_vec = c(orig_sat_conc)
+# # these are completely optional, and probably should be taken out
+# NOx_tracer = ncvar_get(gctm_nc_obj, "IJ-AVG-S__NOx", count = c(-1,-1,4)) # this just has 4 layers. We can only work with these four layers at a time
+# orig_CTM_conc = NOx_tracer[,,1]
+# orig_CTM_conc_vec = c(orig_CTM_conc)
+# orig_sat_conc = NOx_tracer[,,2]
+# orig_sat_conc_vec = c(orig_sat_conc)
 
 # combine with our summarized results with their original latitude/longitude layout
-complete_grid = as.data.frame(cbind(LON, LAT, orig_CTM_conc_vec, orig_sat_conc_vec))
+# complete_grid = as.data.frame(cbind(LON, LAT, orig_CTM_conc_vec, orig_sat_conc_vec))
+complete_grid = as.data.frame(cbind(LON, LAT))#, orig_CTM_conc_vec, orig_sat_conc_vec))
 combined_df = left_join(complete_grid, heatmap_df, by = c("LON", "LAT"))
 
 # impute missing data by mean
-combined_df$average_residuals = ifelse(is.na(combined_df$average_residuals), mean(combined_df$average_residuals[!is.na(combined_df$average_residuals)]), combined_df$average_residuals)
-combined_df$average_residuals_CTM = ifelse(is.na(combined_df$average_residuals_CTM), mean(combined_df$average_residuals_CTM[!is.na(combined_df$average_residuals_CTM)]), combined_df$average_residuals_CTM)
-combined_df$avg_pop_density = ifelse(is.na(combined_df$avg_pop_density), mean(combined_df$avg_pop_density[!is.na(combined_df$avg_pop_density)]), combined_df$avg_pop_density)
-combined_df$avg_pop_count = ifelse(is.na(combined_df$avg_pop_count), mean(combined_df$avg_pop_count[!is.na(combined_df$avg_pop_count)]), combined_df$avg_pop_count)
-combined_df$count = ifelse(is.na(combined_df$count), 0, combined_df$count)
+combined_df$var1 = ifelse(is.na(combined_df$var1), mean(combined_df$var1[!is.na(combined_df$var1)]), combined_df$var1)
+combined_df$var2 = ifelse(is.na(combined_df$var2), mean(combined_df$var2[!is.na(combined_df$var2)]), combined_df$var2)
+combined_df$var3 = ifelse(is.na(combined_df$var3), mean(combined_df$var3[!is.na(combined_df$var3)]), combined_df$var3)
+combined_df$var4 = ifelse(is.na(combined_df$var4), mean(combined_df$var4[!is.na(combined_df$var4)]), combined_df$var4)
 
 # choose the 4 layers we want to view on panopto
-mydata_array1 = combined_df$orig_CTM_conc_vec
-mydata_array2 = combined_df$orig_sat_conc_vec
-mydata_array3 = combined_df$average_residuals
-mydata_array4 = combined_df$average_residuals_CTM
+mydata_array1 = combined_df$var1
+mydata_array2 = combined_df$var2
+mydata_array3 = combined_df$var3
+mydata_array4 = combined_df$var4
 # mydata_array3 = combined_df$avg_pop_density
 # mydata_array4 = combined_df$avg_pop_count
 

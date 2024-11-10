@@ -41,8 +41,8 @@ predict_BRF_with_Satellite = function(predictive_model, test_df, interpretable_t
     mutate(NOx_concentrations = Satellite_Concentrations) %>% 
     select(-c(CTM_Concentrations,Satellite_Concentrations))
   ML_Estimates = predict(predictive_model, newdata = new_data_to_predict)
+  ML_Estimates[ML_Estimates < 0] = 0
   results = cbind(interpretable_test_df, ML_Estimates)
-  results$residuals = results$Prior_Estimates - results$ML_Estimates
   return(results)
 }
 
@@ -51,8 +51,8 @@ predict_BRF_with_CTM = function(predictive_model, test_df, interpretable_test_df
     mutate(NOx_concentrations = CTM_Concentrations) %>% 
     select(-c(CTM_Concentrations,Satellite_Concentrations))
   ML_Estimates = predict(predictive_model, newdata = new_data_to_predict)
+  ML_Estimates[ML_Estimates < 0] = 0
   results = cbind(interpretable_test_df, ML_Estimates)
-  results$residuals = results$Prior_Estimates - results$ML_Estimates
   return(results)
 }
 
