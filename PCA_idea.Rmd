@@ -6,28 +6,15 @@ output: html_document
 ---
 
 
-```{r source}
-
-# function that creates the tidyverse dataframe from the .nc daily data, along with a scaling function
-source("data_script.R")
-
-# try east asian: 
-# so that would be...
-# lat_locations_to_take = c(10.8, 50.5),
-# lon_locations_to_take = c(100, 154.8),
-
-# Let's try to add more emissions
-# The variable names should be: 
-# BIOGSRCE__ISOP
-# BIOGSRCE__ACET
-# BIOGSRCE__PRPE
-# BIOGSRCE__MONOT
-# BIOGSRCE__MBO
+```{r Experimental PCA Idea}
 
 # problems with... 2008 and 2015
+# 2008, August
+# 2015, May
 
-imported_data = csv_from_nc_data_v3(daily_nc_directory = "D:/CTM_daily_nc",
+eigen_data = csv_from_nc_data_v3(daily_nc_directory = "D:/CTM_daily_nc",
                             years_to_take = c("2006", "2007", "2009", "2010", "2011", "2012", "2013","2014", "2016"),
+                            # years_to_take = c("2015"),
                             months_to_take = c("01", "02", "03", "04", "05","06", "07", "08", "09", "10", "11", "12"),
                             lat_locations_to_take = c(10.8, 50.5),
                             lon_locations_to_take = c(100, 154.8),
@@ -38,22 +25,76 @@ imported_data = csv_from_nc_data_v3(daily_nc_directory = "D:/CTM_daily_nc",
                             avg_population_density_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator/population_data/density/avg_population_density_data.csv",
                             total_population_count_csv_file_path = "C:/Users/71000/Desktop/NOx_Emulator/population_data/count/total_population_count_data.csv",
                             only_land = TRUE)
-# Variables #
-# Spatio-temporal Variables: Lat, Lon, Day, Month, (should probably add year as a numeric predictor)
-# Population Variables: Total Pop Count, Total Pop Density
-# Meterological variables: SolarRad, PBL, Winds, Temp, Humidity
-# NOx Concentrations: Satellite and CTM
-# Labels: Prior Emission Estimates
 
-# the interpretable data is used when making the correlation scatterplots
-# these are the variables, unmodified
-interpretable_data = imported_data$interpretable_data
+interpretable_data = eigen_data$interpretable_data
+standardized_data = eigen_data$data
+
+check_num_locations = interpretable_data %>% 
+  select(LAT, LON)
 
 
-# the standardized data is used to fit the boosted tree model
-# it standardizes the population, concentration, and metereological variables
-# the latitude, longitude, and months are also coded with sin and cosine for oscillatory behavior
-standardized_data = imported_data$data
+print("total number of locations")
+print(nrow(unique(check_num_locations)))
+
+Prior_emissions = interpretable_data %>% 
+  select(LAT, LON, Prior_Estimates, Day)
+Prior_emissions_wide = pivot_wider(Prior_emissions, names_from = c(LAT, LON), values_from = Prior_Estimates)[,-1]
+
+SAT_conc = interpretable_data %>% 
+  select(LAT, LON, Satellite_Concentrations, Day)
+SAT_conc_wide = pivot_wider(SAT_conc, names_from = c(LAT, LON), values_from = Satellite_Concentrations)[,-1]
+
+#### Predictors # 
+
+CTM_conc = interpretable_data %>% 
+  select(LAT, LON, CTM_Concentrations, Day)
+CTM_conc_wide = pivot_wider(CTM_conc, names_from = c(LAT, LON), values_from = CTM_Concentrations)[,-1]
+
+RADSWG = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__RADSWG, Day)
+RADSWG_wide = pivot_wider(RADSWG, names_from = c(LAT, LON), values_from = DAO_FLDS__RADSWG)[,-1]
+
+PBL = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__PBL, Day)
+PBL_wide = pivot_wider(PBL, names_from = c(LAT, LON), values_from = DAO_FLDS__PBL)[,-1]
+
+U10M = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__U10M, Day)
+U10M_wide = pivot_wider(U10M, names_from = c(LAT, LON), values_from = DAO_FLDS__U10M)[,-1]
+
+V10M = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__V10M, Day)
+V10M_wide = pivot_wider(V10M, names_from = c(LAT, LON), values_from = DAO_FLDS__V10M)[,-1]
+
+UWND = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__UWND, Day)
+UWND_wide = pivot_wider(UWND, names_from = c(LAT, LON), values_from = DAO_FLDS__UWND)[,-1]
+
+VWND = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__VWND, Day)
+VWND_wide = pivot_wider(VWND, names_from = c(LAT, LON), values_from = DAO_FLDS__VWND)[,-1]
+
+TMPU = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__TMPU, Day)
+TMPU_wide = pivot_wider(TMPU, names_from = c(LAT, LON), values_from = DAO_FLDS__TMPU)[,-1]
+
+SPHU = interpretable_data %>% 
+  select(LAT, LON, DAO_FLDS__SPHU, Day)
+SPHU_wide = pivot_wider(SPHU, names_from = c(LAT, LON), values_from = DAO_FLDS__SPHU)[,-1]
+
+all_preds_all_locs = cbind(CTM_conc_wide, RADSWG_wide, PBL_wide, U10M_wide, V10M_wide, UWND_wide, VWND_wide, TMPU_wide, SPHU_wide)
+
+pred_cov_matrix = cov(all_preds_all_locs)
+pred_eigen_decomp = eigen(cov_matrix)
+pred_loading_matrix = pred_eigen_decomp$vectors
+pred_scores = pred_loading_matrix%*%all_preds_all_locs
+cumsum(pred_eigen_decomp$values)/sum(pred_eigen_decomp$values)
+
+label_cov_matrix = cov(Prior_emissions_wide)
+label_eigen_decomp = eigen(label_cov_matrix)
+label_loading_matrix = label_eigen_decomp$vectors
+label_scores = label_loading_matrix%*%Prior_emissions_wide
+cumsum(label_eigen_decomp$values)/sum(label_eigen_decomp$values)
 
 
 ```
@@ -61,75 +102,70 @@ standardized_data = imported_data$data
 
 ```{r data split}
 
-# Here we split into training and testing data
-
-# split by stratifying into groups based on quantiles of the responses.
-# Recall: Prior_Estimates are the same in both datasets (not standardized)
-response = standardized_data$Prior_Estimates
-strata = rep("ungrouped", length(response))
-strata[response > quantile(response, .5)] = "top50%"
-strata[response > quantile(response, .8)] = "top20%"
-strata[response > quantile(response, .90)] = "top10%"
-strata[response > quantile(response, .95)] = "top5%"
-strata[response > quantile(response, .99)] = "top1%"
-strata[strata == "ungrouped"] = "bottom50%"
-table(strata)
-round(table(strata)/sum(table(strata)),3)*100 # strata percentages --> exactly what I predicted
-
-
-indices_to_sample = c(sample(which(strata == "top1%"), round(.8*sum(strata == "top1%")), replace = FALSE),
-                      sample(which(strata == "top5%"), round(.8*sum(strata == "top5%")), replace = FALSE),
-                      sample(which(strata == "top10%"), round(.8*sum(strata == "top10%")), replace = FALSE),
-                      sample(which(strata == "top20%"), round(.8*sum(strata == "top20%")), replace = FALSE),
-                      sample(which(strata == "top50%"), round(.8*sum(strata == "top50%")), replace = FALSE),
-                      sample(which(strata == "bottom50%"), round(.8*sum(strata == "bottom50%")), replace = FALSE))
-
-
-# split the standardized data into training and holdout sets
-data_to_train = standardized_data[indices_to_sample,] # training dataset
-print(nrow(data_to_train))
-data_to_predict = standardized_data[-indices_to_sample,] # testing dataset to predict
-print(nrow(data_to_predict))
-
-# since we are only interested in the holdout correlation, we filter out the interepretable data corresponding to the training dataset
-data_to_analyze_after_prediction = interpretable_data[-indices_to_sample,] 
+indices_to_train = sample(1:nrow(label_scores), round(.8*nrow(label_scores)), replace = FALSE)
+X_train = pred_scores[indices_to_sample,]
+Y_train = label_scores[indices_to_sample,]
+X_val = pred_scores[-indices_to_sample,]
+Y_val = label_scores[-indices_to_sample,]
 
 ```
 
 
 ```{r model fitting and prediction}
 
-# functions used to fit the model and predict with it
-source("model_script.R")
+# STILL NEED TO DO 
 
-# BEFORE training, use the CTM concentrations for the NOx concentrations
-data_to_train$NOx_concentrations = data_to_train$CTM_Concentrations # create a new variable, "NOx concentrations", which are used to train the model
-data_to_train$CTM_Concentrations = NULL # drop the "CTM concentrations"
-data_to_train$Satellite_Concentrations = NULL # drop the "Satellite Concentrations"
+# training
+BRF_models = list()
+for (j in 1:ncol(label_scores)){
+  
+  # might need to change some parameters
+  BRF_models[[j]] = train(Y_train[,j]~X_train, 
+                         method = "gbm", 
+                         trControl = trainControl("cv", 5), 
+                         tuneGrid = expand.grid(n.trees = 500,
+                                                interaction.depth = 9,
+                                                shrinkage = 0.05,
+                                                n.minobsinnode = 4))
+  
+}
 
-# # NOW fit the model (so these only have CTM NOx concentrations against the Prior NOx emissions)
-BRF_model = fit_BRF(data_to_train, calculate_importance = F) # this actually takes awhile
-save(BRF_model, file = "east_asia_extra_emissions_large.RData") # save the results
-# load("BRF_model_3years.RData")
-
-# now we'll use the holdout set to predict emissions. 
-# we use different functions for different "NOx concentrations"
-# Why? 
-# I wanted to compare how well the model did using the CTM concentrations versus the satellite concentrations
-
-# this uses the satellite concentrations for the "NOx concentrations" variable, then adds the predictions and residuals to the interpretable dataset
-# NOTE: this function uses "predict", which purposefully ignores the response, if the response is in the dataframe
-results_dataset_using_Satellite = predict_BRF_with_Satellite(BRF_model, data_to_predict, data_to_analyze_after_prediction)
-
-# this uses the CTM concentrations for the "NOx concentrations" variable, then adds the predictions and residuals to the interpretable dataset
-results_dataset_using_CTM = predict_BRF_with_CTM(BRF_model, data_to_predict, data_to_analyze_after_prediction)
-
-
-
-# [TgN/box] = [molec/cm2/s] * area * 14 * 10^(4) * days * 24 * 3600 * 1e-12 / 6.023e23
+# predicting
+ML_Estimates = matrix(0, nrow = nrow(Y_test), ncol = ncol(Y_test))
+for (j in 1:ncol(label_scores)){
+  
+  # might need to change some parameters
+  ML_Estimates[,j] = predict(BRF_models[[j]], newdata = X_test)
+  
+}
 
 
-# Why add the results to the interpretable dataset? To make the correlation plots
+save(BRF_models, file = "PCA_models.RData") # save the results
+save(ML_Estimates, file = "PCA_estimates.RData") # save the results
+
+
+# # If that's too much memory, we can do something like this: 
+# ML_Estimates = matrix(0, nrow = nrow(Y_test), ncol = ncol(Y_test))
+# for (j in 1:ncol(label_scores)){
+#   
+#   # might need to change some parameters
+#   jth_BRF_model = train(Y_train[,j]~X_train, 
+#                          method = "gbm", 
+#                          trControl = trainControl("cv", 5), 
+#                          tuneGrid = expand.grid(n.trees = 500,
+#                                                 interaction.depth = 9,
+#                                                 shrinkage = 0.05,
+#                                                 n.minobsinnode = 4))
+#   
+#     ML_Estimates[,j] = predict(jth_BRF_model, newdata = X_test)
+# 
+#   
+# }
+# 
+# save(ML_Estimates, file = "PCA_estimates.RData") # save the results
+
+
+
 ```
 
 
@@ -163,7 +199,7 @@ visualization_df$added_ML_Estimates_CTM = visualization_df_using_CTM$added_ML_Es
 # now we only need to use visualization_df for the plots
 
 # save all the work we just did (optional, since honestly the bottleneck is the training)
-save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "east_asia_extra_emissions_large.RData")
+save(standardized_data, interpretable_data, data_to_train, data_to_predict, data_to_analyze_after_prediction, BRF_model, results_dataset_using_Satellite, results_dataset_using_CTM, visualization_df, file = "east_asia_extra_emissions.RData")
 
 ```
 
@@ -320,6 +356,7 @@ ncvar_put(gctm_nc_obj, gctm_nc_obj$var$`IJ-AVG-S__NOx`$name, total_data)
 nc_close(gctm_nc_obj)
 
 ```
+
 
 
 
